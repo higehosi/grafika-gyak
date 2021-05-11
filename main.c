@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <stdbool.h>
+#define GLUT_DISABLE_ATEXIT_HACK
 #include <GL/freeglut.h>
 #include <SOIL/SOIL.h>
 
@@ -9,30 +10,7 @@
 #include "transform.h"
 #include "draw.h"
 #include "texture.h"
-
-//=========================================================================================================================================
-//vektor struktúra
-typedef struct vec3
-{
-    float x;
-    float y;
-    float z;
-} vec3;
-
-//kamera struktúra
-typedef struct Camera
-{
-    vec3 position;
-    vec3 rotation;
-    vec3 speed;
-    float distance;
-} Camera;
-
-typedef struct Cursor
-{
-    vec3 position;
-    vec3 movement;
-}Cursor;
+#include "utility.h"
 
 //=========================================================================================================================================
 //kamera
@@ -42,7 +20,7 @@ Cursor cursor;
 //fény változók
 GLfloat lightPosition[] = {1, 1, 1, 0.0};
 GLfloat lightColor[] = {1.0, 1.0, 1.0, 1.0};
-GLfloat globalAmbientLight[] = {0.8, 0.8, 0.8, 1.0};
+GLfloat globalAmbientLight[] = {0.1, 0.1, 0.1, 1.0};
 bool lightOn = true;
 //modellek
 Model meat;
@@ -52,22 +30,20 @@ Model refrigerator;
 Model table;
 Model lightSwitch;
 //textúrák
-GLuint tex_meat;
-GLuint tex_pan;
-GLuint tex_stove;
-GLuint tex_refrigerator;
-GLuint tex_table;
-GLuint tex_lightSwitch;
 GLuint tex_floor;
 GLuint tex_wall;
 GLuint tex_info;
+GLuint tex_glow;
 //hús pozíciója
-vec3 meat_position;
 float meat_speed = 0.05;
+//sütő állapot, tepsi izzás
+bool stoveOn = false;
+float glow_level = 0;
 //info ablak változó
 bool showInfo = false;
 
 //=========================================================================================================================================
+void init(int argc, char* argv[]);
 void loadModels();
 void loadTextures();
 void renderScene();
@@ -77,13 +53,35 @@ void mouse();
 void keyboard(unsigned char key, int x, int y);
 void specialKeys(int key, int x, int y);
 void idle();
-void drawTexturedRectangle(GLuint texture);
-void setOrthographicProjection();
-void restorePerspectiveProjection();
-float distance(float x1, float x2, float y1, float y2);
 
 //=========================================================================================================================================
 int main(int argc, char* argv[])
+{
+    //openGL inicializálás
+    init(argc, argv);
+
+    //modellek betöltése
+    loadModels();
+    //textúrák betöltése
+    loadTextures();
+
+	//render
+	glutDisplayFunc(renderScene);
+    glutReshapeFunc(reshape);
+    glutPassiveMotionFunc(mouseMotion);
+    //glutMotionFunc(mouseMotion);
+    glutMouseFunc(mouse);
+    glutKeyboardFunc(keyboard);
+    glutSpecialFunc(specialKeys);
+    glutIdleFunc(idle);
+
+    glutMainLoop();
+
+    return 0;
+}
+
+//=========================================================================================================================================
+void init(int argc, char* argv[])
 {
     //GLUT inicializálás
 	glutInit(&argc, argv);
@@ -96,26 +94,20 @@ int main(int argc, char* argv[])
 	glShadeModel(GL_SMOOTH);
 	glMatrixMode(GL_MODELVIEW);
 
+	glClearColor(0.8, 0.8, 0.8, 0.0);
+    glClearDepth(1.0);
 	glEnable(GL_NORMALIZE);
     glEnable(GL_AUTO_NORMAL);
+
     glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glEnable(GL_COLOR_MATERIAL);
     glEnable(GL_LIGHTING);
     glEnable(GL_LIGHT0);
     glEnable(GL_TEXTURE_2D);
 
-	glClearColor(0.8, 0.8, 0.8, 0.0);
-    glClearDepth(1.0);
-
-    //modellek betöltése
-    loadModels();
-
-    //textúrák betöltése
-    loadTextures();
-
-    //hús kezdőpozíció
-    meat_position.x = 0;
-    meat_position.y = 0;
-    meat_position.z = 0;
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     //kamera beállítása
     camera.position.z = 10;
@@ -127,48 +119,48 @@ int main(int argc, char* argv[])
 	glLightfv(GL_LIGHT0, GL_POSITION, lightPosition);
 	glLightfv(GL_LIGHT0, GL_DIFFUSE, lightColor);
 	glLightModelfv(GL_LIGHT_MODEL_AMBIENT, globalAmbientLight);
-
-	//render
-	glutDisplayFunc(renderScene);
-    glutReshapeFunc(reshape);
-    glutPassiveMotionFunc(mouseMotion);
-    //glutMotionFunc(mouseMotion);
-    glutMouseFunc(mouse);
-    glutKeyboardFunc(keyboard);
-    glutSpecialFunc(specialKeys);
-
-    glutMainLoop();
-
-    return 0;
 }
 
-//=========================================================================================================================================
 void loadModels()
 {
+    //hús
     load_model(&meat, "models/raw_meat.obj");
     scale_model(&meat, 0.5, 0.5, 0.5);
+    //serpenyő
     load_model(&pan, "models/frying_pan.obj");
+    //sütő
     load_model(&stove, "models/stove.obj");
     scale_model(&stove, 0.2, 0.2, 0.2);
+    set_model_position(&stove, 5, -1, 0);
+    stove.rotation.z = 90;
+    //hűtő
     load_model(&refrigerator, "models/refrigerator.obj");
     scale_model(&refrigerator, 0.4, 0.4, 0.4);
+    set_model_position(&refrigerator, -30, 0, -18);
+    refrigerator.rotation.z = -90;
+    //asztal
     load_model(&table, "models/table.obj");
     scale_model(&table, 0.2, 0.2, 0.2);
+    set_model_position(&table, -40, 50, -18);
+    //villanykapcsoló
     load_model(&lightSwitch, "models/light_switch.obj");
     scale_model(&lightSwitch, 0.25, 0.25, 0.25);
+    set_model_position(&lightSwitch, 30, -9, 5);
+    lightSwitch.rotation.z = 90;
 }
 
 void loadTextures()
 {
-    tex_meat = load_texture("textures/raw_meat.png");
-    tex_pan = load_texture("textures/frying_pan.jpg");
-    tex_stove = load_texture("textures/stove.png");
-    tex_refrigerator = load_texture("textures/refrigerator.jpg");
-    tex_table = load_texture("textures/table.png");
-    tex_lightSwitch = load_texture("textures/light_switch.png");
+    meat.texture = load_texture("textures/raw_meat.png");
+    pan.texture = load_texture("textures/frying_pan.jpg");
+    stove.texture = load_texture("textures/stove.png");
+    refrigerator.texture = load_texture("textures/refrigerator.jpg");
+    table.texture = load_texture("textures/table.png");
+    lightSwitch.texture = load_texture("textures/light_switch.png");
     tex_floor = load_texture("textures/tile_floor.jpg");
     tex_wall = load_texture("textures/wall.png");
     tex_info = load_texture("textures/info.png");
+    tex_glow = load_texture("textures/red_glow.png");
 }
 
 void renderScene()
@@ -189,79 +181,39 @@ void renderScene()
                   0.0, 0.0, 1.0                                             //fel iránya (ahol az 1-es van, az a felfelfe)
                   );
         //fény pozícionálása
-        glLightfv(GL_LIGHT0, GL_POSITION, lightPosition);   //újra meghívva, hogy a fény egy helyen maradjon
+        glLightfv(GL_LIGHT0, GL_POSITION, lightPosition);
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, lightColor);
+        glLightModelfv(GL_LIGHT_MODEL_AMBIENT, globalAmbientLight);
 
         //hús kirajzoláas
-        glPushMatrix();
-            glBindTexture(GL_TEXTURE_2D, tex_meat);
-            glTranslatef(meat_position.x, meat_position.y, meat_position.z);
-            draw_model(&meat);
-        glPopMatrix();
-
+        draw_model(&meat);
         //serpenyő kirajzolása
-        glBindTexture(GL_TEXTURE_2D, tex_pan);
         draw_model(&pan);
-
         //sütő kirajzolása
-        glPushMatrix();
-            glTranslatef(5, -1, 0);//hova rajzolja ki
-            glRotatef(90, 0, 0, 1);//forgatás
-            glBindTexture(GL_TEXTURE_2D, tex_stove);
-            draw_model(&stove);
-        glPopMatrix();
-
+        draw_model(&stove);
         //hűtő kirajzolása
-        glPushMatrix();
-            glTranslatef(-30, 0, -18);
-            glRotatef(-90, 0, 0, 1);
-            glBindTexture(GL_TEXTURE_2D, tex_refrigerator);
-            draw_model(&refrigerator);
-        glPopMatrix();
-
+        draw_model(&refrigerator);
         //asztal kirajzolása
-        glPushMatrix();
-            glTranslatef(-40, 50, -18);
-            glBindTexture(GL_TEXTURE_2D, tex_table);
-            draw_model(&table);
-        glPopMatrix();
+        draw_model(&table);
 
         //padló kirajzolása
-        glPushMatrix();
-            glTranslatef(0, 30, -18);
-            glScalef(100.0, 100.0, 100.0);
-            drawTexturedRectangle(tex_floor);
-        glPopMatrix();
+        drawTexturedRectangle(tex_floor, 0, 30, -18, 0, 0, 0, 100);
 
         //fal kirajzolása
-        glPushMatrix();
-            glTranslatef(0, -9, 2);
-            glRotatef(-90, 1, 0, 0);
-            glScalef(100.0, 100.0, 100.0);
-            drawTexturedRectangle(tex_wall);
-        glPopMatrix();
-        glPushMatrix();
-            glTranslatef(50, 30, 2);
-            glRotatef(90, 0, 1, 0);
-            glScalef(100.0, 100.0, 100.0);
-            drawTexturedRectangle(tex_wall);
-        glPopMatrix();
-        glPushMatrix();
-            glTranslatef(-50, 30, 2);
-            glRotatef(90, 0, 1, 0);
-            glScalef(100.0, 100.0, 100.0);
-            drawTexturedRectangle(tex_wall);
-        glPopMatrix();
+        drawTexturedRectangle(tex_wall, 0, -9, 2, -90, 0, 0, 100);
+        drawTexturedRectangle(tex_wall, 50, 30, 2, 0, 90, 0, 100);
+        drawTexturedRectangle(tex_wall, -50, 30, 2, 0, 90, 0,100);
 
         //villanykapcsoló kirajzolása
+        draw_model(&lightSwitch);
+
+        //izzás kirajzolása
         glPushMatrix();
-            glTranslatef(30, -9, 5);
-            glRotatef(90, 0, 0, 1);
-            if(!lightOn)
-            {
-                glRotatef(180, 1, 0, 0);
-            }
-            glBindTexture(GL_TEXTURE_2D, tex_lightSwitch);
-            draw_model(&lightSwitch);
+            glColor4f(1.0, 1.0, 1.0, glow_level);//átlátszóság beállítása
+            glDisable(GL_LIGHTING); //árnyalás kikapcsolása, hogy ragyogjon
+            drawTexturedRectangle(tex_glow, 0, 0, 0.1, 0, 0, 0, 5);
+            glEnable(GL_LIGHTING); //árnyalás visszakapcsolása
+            glColor4f(1.0f,1.0f,1.0f, 1.0f); //átltászóság visszaállítása
         glPopMatrix();
     glPopMatrix();
 
@@ -342,39 +294,53 @@ void keyboard(unsigned char key, int x, int y)
     switch (key)
     {
     case 'd':
-        if(distance(meat_position.x - meat_speed, 0, meat_position.y, 0) < 1.5)
+        if(distance(meat.position.x - meat_speed, 0, meat.position.y, 0) < 1.5)
         {
-            meat_position.x -= meat_speed;
+            meat.position.x -= meat_speed;
         }
         break;
     case 'a':
-        if(distance(meat_position.x + meat_speed, 0, meat_position.y, 0) < 1.5)
+        if(distance(meat.position.x + meat_speed, 0, meat.position.y, 0) < 1.5)
         {
-            meat_position.x += meat_speed;
+            meat.position.x += meat_speed;
         }
         break;
     case 'w':
-        if(distance(meat_position.x, 0, meat_position.y - meat_speed, 0) < 1.5)
+        if(distance(meat.position.x, 0, meat.position.y - meat_speed, 0) < 1.5)
         {
-            meat_position.y -= meat_speed;
+            meat.position.y -= meat_speed;
         }
         break;
     case 's':
-        if(distance(meat_position.x, 0, meat_position.y + meat_speed, 0) < 1.5)
+        if(distance(meat.position.x, 0, meat.position.y + meat_speed, 0) < 1.5)
         {
-            meat_position.y += meat_speed;
+            meat.position.y += meat_speed;
         }
         break;
     case 'l':
         if(lightOn)
         {
+            lightSwitch.rotation.x = 180;
+
             glDisable(GL_LIGHT0);
             lightOn = false;
         }
         else if(!lightOn)
         {
+            lightSwitch.rotation.x = 0;
+
             glEnable(GL_LIGHT0);
             lightOn = true;
+        }
+        break;
+    case 'o':
+        if(stoveOn)
+        {
+            stoveOn = false;
+        }
+        else if(!stoveOn)
+        {
+            stoveOn = true;
         }
         break;
     }
@@ -396,53 +362,14 @@ void specialKeys(int key, int x, int y)
 	}
 }
 
-void drawTexturedRectangle(GLuint texture)
+void idle()
 {
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glBegin(GL_QUADS);
-        glNormal3f(0,0,1);
-        glTexCoord2f(0.0,0.0); //bal felső sarok
-        glVertex3f( -0.5f, -0.5f, 0);
-        glTexCoord2f(1.0,0.0); //bal alsó sarok
-        glVertex3f( 0.5f, -0.5f, 0);
-        glTexCoord2f(1.0,1.0); //jobb alsó
-        glVertex3f( 0.5f, 0.5f, 0);
-        glTexCoord2f(0.0,1.0); //jobb felső
-        glVertex3f( -0.5f, 0.5f, 0);
-    glEnd();
-}
-
-float distance(float x1, float x2, float y1, float y2)
-{
-    float distance = sqrt(pow(x1 - x2, 2) + pow(y1 - y2, 2));
-    return distance;
-}
-
-void setOrthographicProjection() {
-
-	// switch to projection mode
-	glMatrixMode(GL_PROJECTION);
-
-	// save previous matrix which contains the
-	//settings for the perspective projection
-	glPushMatrix();
-
-	// reset matrix
-	glLoadIdentity();
-
-	// set a 2D orthographic projection
-	gluOrtho2D(0, 1280, 720, 0);
-
-	// switch back to modelview mode
-	glMatrixMode(GL_MODELVIEW);
-}
-
-void restorePerspectiveProjection() {
-
-	glMatrixMode(GL_PROJECTION);
-	// restore previous projection matrix
-	glPopMatrix();
-
-	// get back to modelview mode
-	glMatrixMode(GL_MODELVIEW);
+    if(stoveOn && glow_level < 1)
+    {
+        glow_level += 0.001;
+    }
+    else if(!stoveOn && glow_level > 0)
+    {
+        glow_level -= 0.001;
+    }
 }
